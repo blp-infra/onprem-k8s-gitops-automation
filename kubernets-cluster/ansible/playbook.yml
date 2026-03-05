@@ -4,3 +4,10 @@
   roles:
     - role: firewalld
       tags: firewalld
+
+- name: Configure common K8s components on all nodes
+  hosts: k8s_all
+  become: true
+  roles:
+    - role: k8s-common
+      tags: k8s-common

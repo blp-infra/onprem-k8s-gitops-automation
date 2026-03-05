@@ -1,0 +1,16 @@
+# Version pins
+containerd_version: "1.7.14"
+runc_version: "v1.1.12"
+cni_version: "v1.5.0"
+crictl_version: "v1.29.0"
+k8s_version: "1.29.6"
+
+# Download URLs
+containerd_url: "https://github.com/containerd/containerd/releases/download/v{{ containerd_version }}/containerd-{{ containerd_version }}-linux-amd64.tar.gz"
+runc_url: "https://github.com/opencontainers/runc/releases/download/{{ runc_version }}/runc.amd64"
+cni_url: "https://github.com/containernetworking/plugins/releases/download/{{ cni_version }}/cni-plugins-linux-amd64-{{ cni_version }}.tgz"
+crictl_url: "https://github.com/kubernetes-sigs/cri-tools/releases/download/{{ crictl_version }}/crictl-{{ crictl_version }}-linux-amd64.tar.gz"
+
+# Kubernetes repo
+k8s_repo_baseurl: "https://pkgs.k8s.io/core:/stable:/v1.29/rpm/"
+k8s_repo_gpgkey: "https://pkgs.k8s.io/core:/stable:/v1.29/rpm/repodata/repomd.xml.key"

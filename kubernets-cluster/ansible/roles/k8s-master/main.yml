@@ -1,0 +1,10 @@
+- name: Reset Kubernetes if already initialized
+  ansible.builtin.shell: |
+    kubeadm reset -f 2>/dev/null || true
+    rm -rf /etc/kubernetes /var/lib/etcd /var/lib/kubelet/config.yaml
+    iptables -F && iptables -X
+    ipvsadm --clear 2>/dev/null || true
+  args:
+    executable: /bin/bash
+  changed_when: false
+  ignore_errors: true

@@ -1,0 +1,269 @@
+---
+- name: Install required utilities
+  ansible.builtin.command: dnf install -y net-tools curl wget
+  changed_when: false
+
+# ─── SWAP DISABLE (3 layers) ──────────────────────────────────────────────────
+
+- name: Disable swap immediately
+  ansible.builtin.command: swapoff -a
+  changed_when: false
+  ignore_errors: true
+
+- name: Remove swap entry from fstab permanently
+  ansible.builtin.shell: |
+    sed -i '/\bswap\b/d' /etc/fstab
+  changed_when: false
+
+- name: Blacklist zram module
+  ansible.builtin.shell: |
+    echo "blacklist zram" > /etc/modprobe.d/blacklist-zram.conf
+  changed_when: false
+
+- name: Copy disableswap systemd service file
+  ansible.builtin.copy:
+    src: disableswap.service
+    dest: /etc/systemd/system/disableswap.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Reload systemd after adding disableswap service
+  ansible.builtin.command: systemctl daemon-reload
+  changed_when: false
+
+- name: Enable and start disableswap service
+  ansible.builtin.command: systemctl enable --now disableswap
+  changed_when: false
+
+- name: Verify swap is off
+  ansible.builtin.command: swapon --show
+  register: swap_status
+  changed_when: false
+
+- name: Show swap status (should be empty)
+  ansible.builtin.debug:
+    msg: "{{ swap_status.stdout | default('SWAP IS OFF ✅') }}"
+
+# ─── KERNEL MODULES ───────────────────────────────────────────────────────────
+
+- name: Copy kernel modules config
+  ansible.builtin.copy:
+    src: k8s.conf
+    dest: /etc/modules-load.d/k8s.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Load overlay module
+  ansible.builtin.command: modprobe overlay
+  changed_when: false
+
+- name: Load br_netfilter module
+  ansible.builtin.command: modprobe br_netfilter
+  changed_when: false
+
+# ─── SYSCTL SETTINGS ──────────────────────────────────────────────────────────
+
+- name: Copy sysctl k8s config
+  ansible.builtin.copy:
+    src: k8s-sysctl.conf
+    dest: /etc/sysctl.d/k8s.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Apply sysctl settings
+  ansible.builtin.command: sysctl --system
+  changed_when: false
+
+# ─── SELINUX ──────────────────────────────────────────────────────────────────
+
+- name: Set SELinux to permissive mode immediately
+  ansible.builtin.command: setenforce 0
+  changed_when: false
+  ignore_errors: true
+
+- name: Set SELinux to permissive mode permanently
+  ansible.builtin.shell: |
+    sed -i 's/^SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config
+  changed_when: false
+
+# ─── CREATE REQUIRED DIRECTORIES ──────────────────────────────────────────────
+
+- name: Create containerd config directory
+  ansible.builtin.command: mkdir -p /etc/containerd
+  changed_when: false
+
+- name: Create CNI bin directory
+  ansible.builtin.command: mkdir -p /opt/cni/bin
+  changed_when: false
+
+- name: Create CNI config directory
+  ansible.builtin.command: mkdir -p /etc/cni/net.d
+  changed_when: false
+
+- name: Create containerd systemd directory
+  ansible.builtin.command: mkdir -p /usr/local/lib/systemd/system
+  changed_when: false
+
+# ─── CONTAINERD ───────────────────────────────────────────────────────────────
+
+- name: Check if containerd is already installed
+  ansible.builtin.stat:
+    path: /usr/local/bin/containerd
+  register: containerd_binary
+
+- name: Download containerd
+  ansible.builtin.shell: |
+    curl -L {{ containerd_url }} -o /tmp/containerd.tar.gz
+  when: not containerd_binary.stat.exists
+  changed_when: false
+
+- name: Extract containerd to /usr/local
+  ansible.builtin.shell: |
+    tar -C /usr/local -xzf /tmp/containerd.tar.gz
+  when: not containerd_binary.stat.exists
+  changed_when: false
+
+- name: Copy containerd config
+  ansible.builtin.copy:
+    src: config.toml
+    dest: /etc/containerd/config.toml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Download containerd systemd service file
+  ansible.builtin.shell: |
+    curl -L https://raw.githubusercontent.com/containerd/containerd/main/containerd.service \
+      -o /usr/local/lib/systemd/system/containerd.service
+  changed_when: false
+
+- name: Reload systemd daemon
+  ansible.builtin.command: systemctl daemon-reload
+  changed_when: false
+
+- name: Enable and start containerd
+  ansible.builtin.command: systemctl enable --now containerd
+  changed_when: false
+
+# ─── RUNC ─────────────────────────────────────────────────────────────────────
+
+- name: Check if runc is already installed
+  ansible.builtin.stat:
+    path: /usr/local/sbin/runc
+  register: runc_binary
+
+- name: Download runc
+  ansible.builtin.shell: |
+    curl -L {{ runc_url }} -o /usr/local/sbin/runc
+  when: not runc_binary.stat.exists
+  changed_when: false
+
+- name: Make runc executable
+  ansible.builtin.command: chmod 755 /usr/local/sbin/runc
+  changed_when: false
+
+# ─── CNI PLUGINS ──────────────────────────────────────────────────────────────
+
+- name: Check if CNI plugins are already installed
+  ansible.builtin.stat:
+    path: /opt/cni/bin/bridge
+  register: cni_binary
+
+- name: Download CNI plugins
+  ansible.builtin.shell: |
+    curl -L {{ cni_url }} -o /tmp/cni-plugins.tgz
+  when: not cni_binary.stat.exists
+  changed_when: false
+
+- name: Extract CNI plugins
+  ansible.builtin.shell: |
+    tar -C /opt/cni/bin -xzf /tmp/cni-plugins.tgz
+  when: not cni_binary.stat.exists
+  changed_when: false
+
+# ─── CRICTL ───────────────────────────────────────────────────────────────────
+
+- name: Check if crictl is already installed
+  ansible.builtin.stat:
+    path: /usr/local/bin/crictl
+  register: crictl_binary
+
+- name: Download crictl
+  ansible.builtin.shell: |
+    curl -L {{ crictl_url }} -o /tmp/crictl.tar.gz
+  when: not crictl_binary.stat.exists
+  changed_when: false
+
+- name: Extract crictl
+  ansible.builtin.shell: |
+    tar -C /usr/local/bin -xzf /tmp/crictl.tar.gz
+  when: not crictl_binary.stat.exists
+  changed_when: false
+
+- name: Copy crictl config
+  ansible.builtin.copy:
+    src: crictl.yaml
+    dest: /etc/crictl.yaml
+    owner: root
+    group: root
+    mode: "0644"
+
+# ─── KUBERNETES REPO ──────────────────────────────────────────────────────────
+
+- name: Add Kubernetes yum repository
+  ansible.builtin.shell: |
+    cat > /etc/yum.repos.d/kubernetes.repo << 'EOF'
+    [kubernetes]
+    name=Kubernetes
+    baseurl={{ k8s_repo_baseurl }}
+    enabled=1
+    gpgcheck=1
+    gpgkey={{ k8s_repo_gpgkey }}
+    exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
+    EOF
+  changed_when: false
+
+# ─── KUBERNETES PACKAGES ──────────────────────────────────────────────────────
+
+- name: Install kubelet kubeadm kubectl
+  ansible.builtin.command: >
+    dnf install -y
+    kubelet-{{ k8s_version }}
+    kubeadm-{{ k8s_version }}
+    kubectl-{{ k8s_version }}
+    --disableexcludes=kubernetes
+  changed_when: false
+
+- name: Enable kubelet service
+  ansible.builtin.command: systemctl enable kubelet
+  changed_when: false
+
+# ─── HOSTS FILE ───────────────────────────────────────────────────────────────
+
+- name: Add cluster nodes to /etc/hosts
+  ansible.builtin.shell: |
+    grep -q "rhel-master" /etc/hosts || echo "192.168.1.28 rhel-master" >> /etc/hosts
+    grep -q "rhel-worker1" /etc/hosts || echo "192.168.1.29 rhel-worker1" >> /etc/hosts
+    grep -q "rhel-worker2" /etc/hosts || echo "192.168.1.30 rhel-worker2" >> /etc/hosts
+  changed_when: false
+
+# ─── VERIFY ───────────────────────────────────────────────────────────────────
+
+- name: Verify containerd is running
+  ansible.builtin.command: systemctl is-active containerd
+  register: containerd_status
+  changed_when: false
+
+- name: Verify kubelet is enabled
+  ansible.builtin.command: systemctl is-enabled kubelet
+  register: kubelet_status
+  changed_when: false
+
+- name: Show component status
+  ansible.builtin.debug:
+    msg:
+      - "containerd : {{ containerd_status.stdout }}"
+      - "kubelet    : {{ kubelet_status.stdout }}"

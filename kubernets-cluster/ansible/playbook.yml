@@ -18,3 +18,10 @@
   roles:
     - role: k8s-master
       tags: k8s-master
+
+- name: Join worker nodes to Kubernetes cluster
+  hosts: k8s_workers
+  become: true
+  roles:
+    - role: k8s-worker
+      tags: k8s-worker

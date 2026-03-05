@@ -1,0 +1,69 @@
+---
+# ─── SAFETY RESET ─────────────────────────────────────────────────────────────
+
+- name: Reset Kubernetes if already joined
+  ansible.builtin.shell: |
+    kubeadm reset -f 2>/dev/null || true
+    rm -rf /etc/kubernetes
+    rm -rf /root/.kube
+    iptables -F && iptables -X
+    iptables -t nat -F && iptables -t nat -X
+    iptables -t mangle -F && iptables -t mangle -X
+    ipvsadm --clear 2>/dev/null || true
+  args:
+    executable: /bin/bash
+  changed_when: false
+  ignore_errors: true
+
+# ─── PRE-FLIGHT CHECKS ────────────────────────────────────────────────────────
+
+- name: Verify containerd is running before join
+  ansible.builtin.command: systemctl is-active containerd
+  register: containerd_check
+  changed_when: false
+  failed_when: containerd_check.stdout != "active"
+
+- name: Verify swap is off before join
+  ansible.builtin.shell: swapon --show | wc -l
+  register: swap_check
+  changed_when: false
+
+- name: Fail if swap is still on
+  ansible.builtin.fail:
+    msg: "Swap is still enabled! Kubernetes requires swap to be disabled."
+  when: swap_check.stdout | int > 0
+
+# ─── COPY JOIN COMMAND ────────────────────────────────────────────────────────
+
+- name: Copy join command from control node to workers
+  ansible.builtin.copy:
+    src: /tmp/join-command.sh
+    dest: /tmp/join-command.sh
+    owner: root
+    group: root
+    mode: "0700"
+
+# ─── JOIN CLUSTER ─────────────────────────────────────────────────────────────
+
+- name: Join worker to Kubernetes cluster
+  ansible.builtin.shell: |
+    bash /tmp/join-command.sh 2>&1 | tee /var/log/kubeadm-join.log
+  args:
+    executable: /bin/bash
+  register: join_output
+  changed_when: false
+
+- name: Show join output
+  ansible.builtin.debug:
+    msg: "{{ join_output.stdout_lines }}"
+
+# ─── VERIFY ───────────────────────────────────────────────────────────────────
+
+- name: Verify kubelet is running after join
+  ansible.builtin.command: systemctl is-active kubelet
+  register: kubelet_status
+  changed_when: false
+
+- name: Show kubelet status
+  ansible.builtin.debug:
+    msg: "kubelet : {{ kubelet_status.stdout }}"

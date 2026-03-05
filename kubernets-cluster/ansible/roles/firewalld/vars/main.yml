@@ -1,0 +1,30 @@
+# Common ports for ALL nodes
+common_tcp_ports:
+  - 22 # SSH
+  - 10250 # Kubelet API
+
+# Master only ports
+master_tcp_ports:
+  - 6443 # Kubernetes API server
+  - 2379 # etcd client API
+  - 2380 # etcd peer API
+  - 10257 # kube-controller-manager
+  - 10259 # kube-scheduler
+
+# Worker only ports
+worker_tcp_ports:
+  - 10256 # kube-proxy
+
+# NodePort range - both master and worker
+nodeport_tcp_range: "30000-32767"
+nodeport_udp_range: "30000-32767"
+
+# Cilium ports
+cilium_tcp_ports:
+  - 4240 # Cilium health checks
+  - 4244 # Hubble server
+  - 4245 # Hubble relay
+  - 443 # Hubble UI
+
+cilium_udp_ports:
+  - 8472 # Cilium VXLAN overlay

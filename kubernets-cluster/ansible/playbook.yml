@@ -1,5 +1,6 @@
-- name: Configure dependencies for Kubernetes 
-  hosts: all 
-  become:  true 
-  roles: 
-    - "{{ role_name }}"
+- name: Configure firewall on all K8s nodes
+  hosts: k8s_all
+  become: true
+  roles:
+    - role: firewalld
+      tags: firewalld

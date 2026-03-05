@@ -1,0 +1,96 @@
+---
+- name: Install firewalld
+  ansible.builtin.dnf:
+    name: firewalld
+    state: present
+
+- name: Start and enable firewalld
+  ansible.builtin.systemd_service:
+    name: firewalld
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Open common TCP ports on all nodes
+  ansible.posix.firewalld:
+    port: "{{ item }}/tcp"
+    permanent: true
+    state: enabled
+    zone: public
+    immediate: true
+  loop: "{{ common_tcp_ports }}"
+
+- name: Open master TCP ports
+  ansible.posix.firewalld:
+    port: "{{ item }}/tcp"
+    permanent: true
+    state: enabled
+    zone: public
+    immediate: true
+  loop: "{{ master_tcp_ports }}"
+  when: inventory_hostname in groups['k8s_master']
+
+- name: Open worker TCP ports
+  ansible.posix.firewalld:
+    port: "{{ item }}/tcp"
+    permanent: true
+    state: enabled
+    zone: public
+    immediate: true
+  loop: "{{ worker_tcp_ports }}"
+  when: inventory_hostname in groups['k8s_workers']
+
+- name: Open NodePort TCP range on all nodes
+  ansible.posix.firewalld:
+    port: "{{ nodeport_tcp_range }}/tcp"
+    permanent: true
+    state: enabled
+    zone: public
+    immediate: true
+
+- name: Open NodePort UDP range on all nodes
+  ansible.posix.firewalld:
+    port: "{{ nodeport_udp_range }}/udp"
+    permanent: true
+    state: enabled
+    zone: public
+    immediate: true
+
+- name: Open Cilium TCP ports on all nodes
+  ansible.posix.firewalld:
+    port: "{{ item }}/tcp"
+    permanent: true
+    state: enabled
+    zone: public
+    immediate: true
+  loop: "{{ cilium_tcp_ports }}"
+
+- name: Open Cilium UDP ports on all nodes
+  ansible.posix.firewalld:
+    port: "{{ item }}/udp"
+    permanent: true
+    state: enabled
+    zone: public
+    immediate: true
+  loop: "{{ cilium_udp_ports }}"
+
+- name: Enable IP masquerading for pod traffic
+  ansible.posix.firewalld:
+    masquerade: true
+    permanent: true
+    state: enabled
+    zone: public
+    immediate: true
+
+- name: Reload firewalld to apply all rules
+  ansible.builtin.command: firewall-cmd --reload
+  changed_when: false
+
+- name: Verify firewalld rules
+  ansible.builtin.command: firewall-cmd --list-all
+  register: firewall_rules
+  changed_when: false
+
+- name: Show firewall rules
+  ansible.builtin.debug:
+    msg: "{{ firewall_rules.stdout_lines }}"

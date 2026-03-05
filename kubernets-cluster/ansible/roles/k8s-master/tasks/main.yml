@@ -1,0 +1,187 @@
+---
+# ─── SAFETY RESET ─────────────────────────────────────────────────────────────
+
+- name: Reset Kubernetes if already initialized
+  ansible.builtin.shell: |
+    kubeadm reset -f 2>/dev/null || true
+    rm -rf /etc/kubernetes
+    rm -rf /var/lib/etcd
+    rm -rf /root/.kube
+    iptables -F && iptables -X
+    iptables -t nat -F && iptables -t nat -X
+    iptables -t mangle -F && iptables -t mangle -X
+    ipvsadm --clear 2>/dev/null || true
+  args:
+    executable: /bin/bash
+  changed_when: false
+  ignore_errors: true
+
+# ─── PRE-FLIGHT CHECKS ────────────────────────────────────────────────────────
+
+- name: Verify containerd is running before init
+  ansible.builtin.command: systemctl is-active containerd
+  register: containerd_check
+  changed_when: false
+  failed_when: containerd_check.stdout != "active"
+
+- name: Verify swap is off before init
+  ansible.builtin.shell: |
+    swapon --show | wc -l
+  register: swap_check
+  changed_when: false
+
+- name: Fail if swap is still on
+  ansible.builtin.fail:
+    msg: "Swap is still enabled! Kubernetes requires swap to be disabled."
+  when: swap_check.stdout | int > 0
+
+- name: Pull kubeadm images before init
+  ansible.builtin.command: kubeadm config images pull --kubernetes-version=v{{ k8s_version }}
+  changed_when: false
+
+# ─── KUBEADM INIT ─────────────────────────────────────────────────────────────
+
+- name: Copy kubeadm config to master
+  ansible.builtin.copy:
+    src: kubeadm-config.yaml
+    dest: /tmp/kubeadm-config.yaml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Initialize Kubernetes cluster
+  ansible.builtin.shell: |
+    kubeadm init --config=/tmp/kubeadm-config.yaml \
+      --upload-certs \
+      --ignore-preflight-errors=all \
+      2>&1 | tee /var/log/kubeadm-init.log
+  args:
+    executable: /bin/bash
+  register: kubeadm_init
+  changed_when: false
+
+- name: Show kubeadm init output
+  ansible.builtin.debug:
+    msg: "{{ kubeadm_init.stdout_lines[-20:] }}"
+
+# ─── KUBECONFIG SETUP ─────────────────────────────────────────────────────────
+
+- name: Create .kube directory for root
+  ansible.builtin.command: mkdir -p /root/.kube
+  changed_when: false
+
+- name: Copy admin.conf to root kubeconfig
+  ansible.builtin.shell: |
+    cp /etc/kubernetes/admin.conf /root/.kube/config
+    chown root:root /root/.kube/config
+    chmod 600 /root/.kube/config
+  changed_when: false
+
+- name: Export KUBECONFIG in root bashrc
+  ansible.builtin.shell: |
+    grep -q "KUBECONFIG" /root/.bashrc || \
+    echo "export KUBECONFIG=/root/.kube/config" >> /root/.bashrc
+  changed_when: false
+
+# ─── VERIFY CLUSTER ───────────────────────────────────────────────────────────
+
+- name: Wait for API server to be ready
+  ansible.builtin.shell: |
+    kubectl get nodes 2>/dev/null
+  register: nodes_check
+  retries: 10
+  delay: 10
+  until: nodes_check.rc == 0
+  changed_when: false
+
+- name: Show cluster nodes
+  ansible.builtin.debug:
+    msg: "{{ nodes_check.stdout_lines }}"
+
+# ─── INSTALL CILIUM ───────────────────────────────────────────────────────────
+
+- name: Check if Helm is already installed
+  ansible.builtin.stat:
+    path: /usr/local/bin/helm
+  register: helm_binary
+
+- name: Download and install Helm
+  ansible.builtin.shell: |
+    curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+  when: not helm_binary.stat.exists
+  changed_when: false
+
+- name: Add Cilium Helm repo
+  ansible.builtin.shell: |
+    helm repo add cilium https://helm.cilium.io/ 2>/dev/null || true
+    helm repo update
+  changed_when: false
+
+- name: Install Cilium via Helm
+  ansible.builtin.shell: |
+    helm upgrade --install cilium cilium/cilium \
+      --version {{ cilium_version }} \
+      --namespace kube-system \
+      --set ipam.mode=kubernetes \
+      --set kubeProxyReplacement=false \
+      --set hubble.relay.enabled=true \
+      --set hubble.ui.enabled=true \
+      --set tunnel=vxlan
+  changed_when: false
+
+- name: Wait for Cilium pods to be ready
+  ansible.builtin.shell: |
+    kubectl wait --for=condition=ready pod \
+      -l k8s-app=cilium \
+      -n kube-system \
+      --timeout=120s
+  register: cilium_wait
+  changed_when: false
+  ignore_errors: true
+
+- name: Show Cilium pod status
+  ansible.builtin.shell: |
+    kubectl get pods -n kube-system -l k8s-app=cilium
+  register: cilium_status
+  changed_when: false
+
+- name: Display Cilium status
+  ansible.builtin.debug:
+    msg: "{{ cilium_status.stdout_lines }}"
+
+# ─── GENERATE JOIN COMMAND ────────────────────────────────────────────────────
+
+- name: Generate worker join command
+  ansible.builtin.shell: |
+    kubeadm token create --print-join-command
+  register: join_command
+  changed_when: false
+
+- name: Save join command to file on master
+  ansible.builtin.shell: |
+    echo "{{ join_command.stdout }}" > /tmp/join-command.sh
+    chmod 600 /tmp/join-command.sh
+  changed_when: false
+
+- name: Fetch join command to control node
+  ansible.builtin.fetch:
+    src: /tmp/join-command.sh
+    dest: /tmp/join-command.sh
+    flat: true
+
+- name: Show join command
+  ansible.builtin.debug:
+    msg: "{{ join_command.stdout }}"
+
+# ─── FINAL VERIFICATION ───────────────────────────────────────────────────────
+
+- name: Show final cluster status
+  ansible.builtin.shell: |
+    echo "=== NODES ===" && kubectl get nodes -o wide
+    echo "=== PODS ===" && kubectl get pods -A
+  register: final_status
+  changed_when: false
+
+- name: Display final cluster status
+  ansible.builtin.debug:
+    msg: "{{ final_status.stdout_lines }}"

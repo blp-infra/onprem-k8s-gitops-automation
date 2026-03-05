@@ -1,8 +1,12 @@
 ---
+# - name: Install firewalld
+#   ansible.builtin.dnf:
+#     name: firewalld
+#     state: present
 - name: Install firewalld
-  ansible.builtin.dnf:
-    name: firewalld
-    state: present
+  ansible.builtin.command:
+    cmd: dnf install -y firewalld
+    creates: /usr/sbin/firewalld
 
 - name: Start and enable firewalld
   ansible.builtin.systemd_service:

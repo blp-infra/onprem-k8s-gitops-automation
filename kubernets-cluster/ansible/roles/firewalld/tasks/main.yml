@@ -1,90 +1,102 @@
 ---
-# - name: Install firewalld
-#   ansible.builtin.dnf:
-#     name: firewalld
-#     state: present
 - name: Install firewalld
   ansible.builtin.command:
     cmd: dnf install -y firewalld
     creates: /usr/sbin/firewalld
 
 - name: Start and enable firewalld
-  ansible.builtin.systemd_service:
-    name: firewalld
-    state: started
-    enabled: true
-    daemon_reload: true
+  ansible.builtin.command: systemctl enable --now firewalld
+  changed_when: false
 
-- name: Open common TCP ports on all nodes
-  ansible.posix.firewalld:
-    port: "{{ item }}/tcp"
-    permanent: true
-    state: enabled
-    zone: public
-    immediate: true
-  loop: "{{ common_tcp_ports }}"
+# ─── COMMON PORTS (ALL NODES) ─────────────────────────────────────────────────
 
-- name: Open master TCP ports
-  ansible.posix.firewalld:
-    port: "{{ item }}/tcp"
-    permanent: true
-    state: enabled
-    zone: public
-    immediate: true
-  loop: "{{ master_tcp_ports }}"
+- name: Open SSH port on all nodes
+  ansible.builtin.command: firewall-cmd --permanent --add-port=22/tcp
+  changed_when: false
+
+- name: Open Kubelet API port on all nodes
+  ansible.builtin.command: firewall-cmd --permanent --add-port=10250/tcp
+  changed_when: false
+
+# ─── MASTER ONLY PORTS ────────────────────────────────────────────────────────
+
+- name: Open Kubernetes API server port on master
+  ansible.builtin.command: firewall-cmd --permanent --add-port=6443/tcp
   when: inventory_hostname in groups['k8s_master']
+  changed_when: false
 
-- name: Open worker TCP ports
-  ansible.posix.firewalld:
-    port: "{{ item }}/tcp"
-    permanent: true
-    state: enabled
-    zone: public
-    immediate: true
-  loop: "{{ worker_tcp_ports }}"
+- name: Open etcd client API port on master
+  ansible.builtin.command: firewall-cmd --permanent --add-port=2379/tcp
+  when: inventory_hostname in groups['k8s_master']
+  changed_when: false
+
+- name: Open etcd peer API port on master
+  ansible.builtin.command: firewall-cmd --permanent --add-port=2380/tcp
+  when: inventory_hostname in groups['k8s_master']
+  changed_when: false
+
+- name: Open kube-controller-manager port on master
+  ansible.builtin.command: firewall-cmd --permanent --add-port=10257/tcp
+  when: inventory_hostname in groups['k8s_master']
+  changed_when: false
+
+- name: Open kube-scheduler port on master
+  ansible.builtin.command: firewall-cmd --permanent --add-port=10259/tcp
+  when: inventory_hostname in groups['k8s_master']
+  changed_when: false
+
+# ─── WORKER ONLY PORTS ────────────────────────────────────────────────────────
+
+- name: Open kube-proxy port on workers
+  ansible.builtin.command: firewall-cmd --permanent --add-port=10256/tcp
   when: inventory_hostname in groups['k8s_workers']
+  changed_when: false
+
+# ─── NODEPORT RANGE (ALL NODES) ───────────────────────────────────────────────
 
 - name: Open NodePort TCP range on all nodes
-  ansible.posix.firewalld:
-    port: "{{ nodeport_tcp_range }}/tcp"
-    permanent: true
-    state: enabled
-    zone: public
-    immediate: true
+  ansible.builtin.command: firewall-cmd --permanent --add-port=30000-32767/tcp
+  changed_when: false
 
 - name: Open NodePort UDP range on all nodes
-  ansible.posix.firewalld:
-    port: "{{ nodeport_udp_range }}/udp"
-    permanent: true
-    state: enabled
-    zone: public
-    immediate: true
+  ansible.builtin.command: firewall-cmd --permanent --add-port=30000-32767/udp
+  changed_when: false
 
-- name: Open Cilium TCP ports on all nodes
-  ansible.posix.firewalld:
-    port: "{{ item }}/tcp"
-    permanent: true
-    state: enabled
-    zone: public
-    immediate: true
-  loop: "{{ cilium_tcp_ports }}"
+# ─── CILIUM PORTS (ALL NODES) ─────────────────────────────────────────────────
 
-- name: Open Cilium UDP ports on all nodes
-  ansible.posix.firewalld:
-    port: "{{ item }}/udp"
-    permanent: true
-    state: enabled
-    zone: public
-    immediate: true
-  loop: "{{ cilium_udp_ports }}"
+- name: Open Cilium health check port on all nodes
+  ansible.builtin.command: firewall-cmd --permanent --add-port=4240/tcp
+  changed_when: false
+
+- name: Open Hubble server port on all nodes
+  ansible.builtin.command: firewall-cmd --permanent --add-port=4244/tcp
+  changed_when: false
+
+- name: Open Hubble relay port on all nodes
+  ansible.builtin.command: firewall-cmd --permanent --add-port=4245/tcp
+  changed_when: false
+
+- name: Open Hubble UI port on all nodes
+  ansible.builtin.command: firewall-cmd --permanent --add-port=443/tcp
+  changed_when: false
+
+- name: Open Cilium VXLAN overlay port on all nodes
+  ansible.builtin.command: firewall-cmd --permanent --add-port=8472/udp
+  changed_when: false
+
+# ─── CILIUM WIREGUARD (ALL NODES) ─────────────────────────────────────────────
+
+- name: Open Cilium WireGuard port on all nodes
+  ansible.builtin.command: firewall-cmd --permanent --add-port=51871/udp
+  changed_when: false
+
+# ─── MASQUERADE ───────────────────────────────────────────────────────────────
 
 - name: Enable IP masquerading for pod traffic
-  ansible.posix.firewalld:
-    masquerade: true
-    permanent: true
-    state: enabled
-    zone: public
-    immediate: true
+  ansible.builtin.command: firewall-cmd --permanent --add-masquerade
+  changed_when: false
+
+# ─── RELOAD AND VERIFY ────────────────────────────────────────────────────────
 
 - name: Reload firewalld to apply all rules
   ansible.builtin.command: firewall-cmd --reload
@@ -95,6 +107,6 @@
   register: firewall_rules
   changed_when: false
 
-- name: Show firewall rules
+- name: Show applied firewall rules
   ansible.builtin.debug:
     msg: "{{ firewall_rules.stdout_lines }}"

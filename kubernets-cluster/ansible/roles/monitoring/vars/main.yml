@@ -1,0 +1,26 @@
+# ── Versions ──────────────────────────────────────────────
+kube_prometheus_stack_version: "58.2.1"
+loki_stack_version: "2.10.2"
+fluent_bit_version: "0.46.7"
+k8s_dashboard_version: "v2.7.0"
+
+# ── NodePorts ─────────────────────────────────────────────
+grafana_nodeport: "32000"
+prometheus_nodeport: "32002"
+dashboard_nodeport: "32003"
+
+# ── Grafana ───────────────────────────────────────────────
+grafana_admin_password: "Admin@2026"
+
+# ── Retention ─────────────────────────────────────────────
+metrics_retention: "2d"
+logs_retention: "48h"
+
+# ── Alertmanager SMTP ─────────────────────────────────────
+smtp_server: "smtp.yourdomain.com"
+smtp_port: "25"
+smtp_from: "alerts@yourdomain.com"
+smtp_to: "team@yourdomain.com"
+smtp_auth_username: ""
+smtp_auth_password: ""
+smtp_require_tls: "false"

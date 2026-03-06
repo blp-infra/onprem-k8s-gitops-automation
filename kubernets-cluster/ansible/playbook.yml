@@ -25,3 +25,10 @@
   roles:
     - role: k8s-worker
       tags: k8s-worker
+
+- name: Deploy monitoring stack
+  hosts: k8s_all
+  become: true
+  roles:
+    - role: monitoring
+      tags: monitoring

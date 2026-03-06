@@ -17,7 +17,7 @@
   run_once: true
   delegate_to: "{{ groups['k8s_master'][0] }}"
 
-# ─── OPEN FIREWALL PORTS FOR MONITORING ──────────────────────────────────────
+# ─── OPEN FIREWALL PORTS ──────────────────────────────────────────────────────
 
 - name: Open Grafana NodePort on all nodes
   ansible.builtin.command: firewall-cmd --permanent --add-port=32000/tcp
@@ -49,6 +49,8 @@
   ansible.builtin.shell: |
     helm repo add prometheus-community \
       https://prometheus-community.github.io/helm-charts 2>/dev/null || true
+  args:
+    executable: /bin/bash
   changed_when: false
   run_once: true
   delegate_to: "{{ groups['k8s_master'][0] }}"
@@ -57,6 +59,8 @@
   ansible.builtin.shell: |
     helm repo add grafana \
       https://grafana.github.io/helm-charts 2>/dev/null || true
+  args:
+    executable: /bin/bash
   changed_when: false
   run_once: true
   delegate_to: "{{ groups['k8s_master'][0] }}"
@@ -65,12 +69,16 @@
   ansible.builtin.shell: |
     helm repo add fluent \
       https://fluent.github.io/helm-charts 2>/dev/null || true
+  args:
+    executable: /bin/bash
   changed_when: false
   run_once: true
   delegate_to: "{{ groups['k8s_master'][0] }}"
 
 - name: Update all Helm repos
   ansible.builtin.shell: helm repo update
+  args:
+    executable: /bin/bash
   changed_when: false
   run_once: true
   delegate_to: "{{ groups['k8s_master'][0] }}"
@@ -81,6 +89,8 @@
   ansible.builtin.shell: |
     kubectl get namespace monitoring 2>/dev/null || \
     kubectl create namespace monitoring
+  args:
+    executable: /bin/bash
   changed_when: false
   run_once: true
   delegate_to: "{{ groups['k8s_master'][0] }}"
@@ -89,6 +99,8 @@
   ansible.builtin.shell: |
     kubectl get namespace logging 2>/dev/null || \
     kubectl create namespace logging
+  args:
+    executable: /bin/bash
   changed_when: false
   run_once: true
   delegate_to: "{{ groups['k8s_master'][0] }}"
@@ -97,6 +109,8 @@
   ansible.builtin.shell: |
     kubectl get namespace kubernetes-dashboard 2>/dev/null || \
     kubectl create namespace kubernetes-dashboard
+  args:
+    executable: /bin/bash
   changed_when: false
   run_once: true
   delegate_to: "{{ groups['k8s_master'][0] }}"
@@ -105,6 +119,8 @@
 
 - name: Check if kube-prometheus-stack is already installed
   ansible.builtin.shell: helm status kube-prometheus-stack -n monitoring 2>/dev/null
+  args:
+    executable: /bin/bash
   register: prometheus_status
   changed_when: false
   failed_when: false
@@ -150,30 +166,58 @@
 
 - name: Check if Loki is already installed
   ansible.builtin.shell: helm status loki -n logging 2>/dev/null
+  args:
+    executable: /bin/bash
   register: loki_status
   changed_when: false
   failed_when: false
   run_once: true
   delegate_to: "{{ groups['k8s_master'][0] }}"
 
+- name: Copy Loki values file to master
+  ansible.builtin.copy:
+    dest: /tmp/loki-values.yaml
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      loki:
+        commonConfig:
+          replication_factor: 1
+        storage:
+          type: filesystem
+        schemaConfig:
+          configs:
+            - from: "2024-01-01"
+              store: tsdb
+              object_store: filesystem
+              schema: v13
+              index:
+                prefix: loki_index_
+                period: 24h
+        limits_config:
+          retention_period: 48h
+          allow_structured_metadata: false
+        rulerConfig:
+          storage:
+            type: local
+      singleBinary:
+        replicas: 1
+      write:
+        replicas: 0
+      read:
+        replicas: 0
+      backend:
+        replicas: 0
+  delegate_to: "{{ groups['k8s_master'][0] }}"
+  run_once: true
+
 - name: Install Loki via Helm
   ansible.builtin.shell: |
     helm upgrade --install loki \
       grafana/loki \
       --namespace logging \
-      --set loki.commonConfig.replication_factor=1 \
-      --set loki.storage.type=filesystem \
-      --set loki.limits_config.retention_period=48h \
-      --set loki.schemaConfig.configs[0].from=2024-01-01 \
-      --set loki.schemaConfig.configs[0].store=tsdb \
-      --set loki.schemaConfig.configs[0].object_store=filesystem \
-      --set loki.schemaConfig.configs[0].schema=v13 \
-      --set loki.schemaConfig.configs[0].index.prefix=loki_index_ \
-      --set loki.schemaConfig.configs[0].index.period=24h \
-      --set singleBinary.replicas=1 \
-      --set write.replicas=0 \
-      --set read.replicas=0 \
-      --set backend.replicas=0 \
+      --values /tmp/loki-values.yaml \
       --timeout 10m \
       --wait
   args:
@@ -187,6 +231,8 @@
 
 - name: Check if Fluent Bit is already installed
   ansible.builtin.shell: helm status fluent-bit -n logging 2>/dev/null
+  args:
+    executable: /bin/bash
   register: fluentbit_status
   changed_when: false
   failed_when: false
@@ -205,11 +251,10 @@
           [OUTPUT]
               Name                   loki
               Match                  *
-              Host                   loki.logging.svc.cluster.local
-              Port                   3100
+              Host                   loki-gateway.logging.svc.cluster.local
+              Port                   80
               Labels                 job=fluent-bit
               Auto_Kubernetes_Labels on
-              label_keys             $sub['stream']
               line_format            json
         filters: |
           [FILTER]
@@ -226,7 +271,7 @@
   delegate_to: "{{ groups['k8s_master'][0] }}"
   run_once: true
 
-- name: Install Fluent Bit via Helm
+- name: Install or upgrade Fluent Bit via Helm
   ansible.builtin.shell: |
     helm upgrade --install fluent-bit \
       fluent/fluent-bit \
@@ -237,7 +282,6 @@
       --wait
   args:
     executable: /bin/bash
-  when: fluentbit_status.rc != 0
   changed_when: false
   run_once: true
   delegate_to: "{{ groups['k8s_master'][0] }}"
@@ -261,7 +305,7 @@
           - name: Loki
             type: loki
             access: proxy
-            url: http://loki.logging.svc.cluster.local:3100
+            url: http://loki-gateway.logging.svc.cluster.local:80
             isDefault: false
             editable: true
     EOF
@@ -277,7 +321,9 @@
   ansible.builtin.shell: |
     kubectl get deployment kubernetes-dashboard \
       -n kubernetes-dashboard 2>/dev/null
-  register: dashboard_status
+  args:
+    executable: /bin/bash
+  register: dashboard_check
   changed_when: false
   failed_when: false
   run_once: true
@@ -289,7 +335,7 @@
       https://raw.githubusercontent.com/kubernetes/dashboard/{{ k8s_dashboard_version }}/aio/deploy/recommended.yaml
   args:
     executable: /bin/bash
-  when: dashboard_status.rc != 0
+  when: dashboard_check.rc != 0
   changed_when: false
   run_once: true
   delegate_to: "{{ groups['k8s_master'][0] }}"
@@ -333,7 +379,7 @@
   run_once: true
   delegate_to: "{{ groups['k8s_master'][0] }}"
 
-# ─── WAIT FOR ALL PODS ────────────────────────────────────────────────────────
+# ─── WAIT FOR PODS ────────────────────────────────────────────────────────────
 
 - name: Wait for Grafana pod to be ready
   ansible.builtin.shell: |
@@ -363,15 +409,21 @@
 
 # ─── FINAL STATUS ─────────────────────────────────────────────────────────────
 
-- name: Get monitoring stack status
+- name: Get full monitoring stack status
   ansible.builtin.shell: |
-    echo "=== MONITORING ===" && \
+    echo "=== MONITORING PODS ===" && \
     kubectl get pods -n monitoring -o wide && \
-    echo "=== SERVICES ===" && \
+    echo "" && \
+    echo "=== MONITORING SERVICES ===" && \
     kubectl get svc -n monitoring && \
-    echo "=== LOGGING ===" && \
+    echo "" && \
+    echo "=== LOGGING PODS ===" && \
     kubectl get pods -n logging -o wide && \
-    echo "=== DASHBOARD ===" && \
+    echo "" && \
+    echo "=== LOGGING SERVICES ===" && \
+    kubectl get svc -n logging && \
+    echo "" && \
+    echo "=== DASHBOARD PODS ===" && \
     kubectl get pods -n kubernetes-dashboard
   args:
     executable: /bin/bash
@@ -400,3 +452,386 @@
       - "Dashboard Token:"
       - "{{ dashboard_token.stdout }}"
       - "================================================"
+# # ─── OPEN FIREWALL PORTS FOR MONITORING ──────────────────────────────────────
+
+# - name: Open Grafana NodePort on all nodes
+#   ansible.builtin.command: firewall-cmd --permanent --add-port=32000/tcp
+#   changed_when: false
+
+# - name: Open Prometheus NodePort on all nodes
+#   ansible.builtin.command: firewall-cmd --permanent --add-port=32002/tcp
+#   changed_when: false
+
+# - name: Open Alertmanager NodePort on all nodes
+#   ansible.builtin.command: firewall-cmd --permanent --add-port=32004/tcp
+#   changed_when: false
+
+# - name: Open K8s Dashboard NodePort on all nodes
+#   ansible.builtin.command: firewall-cmd --permanent --add-port=32003/tcp
+#   changed_when: false
+
+# - name: Open SMTP port on all nodes
+#   ansible.builtin.command: firewall-cmd --permanent --add-port={{ smtp_port }}/tcp
+#   changed_when: false
+
+# - name: Reload firewalld
+#   ansible.builtin.command: firewall-cmd --reload
+#   changed_when: false
+
+# # ─── HELM REPOS ───────────────────────────────────────────────────────────────
+
+# - name: Add Prometheus community Helm repo
+#   ansible.builtin.shell: |
+#     helm repo add prometheus-community \
+#       https://prometheus-community.github.io/helm-charts 2>/dev/null || true
+#   changed_when: false
+#   run_once: true
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+
+# - name: Add Grafana Helm repo
+#   ansible.builtin.shell: |
+#     helm repo add grafana \
+#       https://grafana.github.io/helm-charts 2>/dev/null || true
+#   changed_when: false
+#   run_once: true
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+
+# - name: Add Fluent Bit Helm repo
+#   ansible.builtin.shell: |
+#     helm repo add fluent \
+#       https://fluent.github.io/helm-charts 2>/dev/null || true
+#   changed_when: false
+#   run_once: true
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+
+# - name: Update all Helm repos
+#   ansible.builtin.shell: helm repo update
+#   changed_when: false
+#   run_once: true
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+
+# # ─── NAMESPACES ───────────────────────────────────────────────────────────────
+
+# - name: Create monitoring namespace
+#   ansible.builtin.shell: |
+#     kubectl get namespace monitoring 2>/dev/null || \
+#     kubectl create namespace monitoring
+#   changed_when: false
+#   run_once: true
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+
+# - name: Create logging namespace
+#   ansible.builtin.shell: |
+#     kubectl get namespace logging 2>/dev/null || \
+#     kubectl create namespace logging
+#   changed_when: false
+#   run_once: true
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+
+# - name: Create kubernetes-dashboard namespace
+#   ansible.builtin.shell: |
+#     kubectl get namespace kubernetes-dashboard 2>/dev/null || \
+#     kubectl create namespace kubernetes-dashboard
+#   changed_when: false
+#   run_once: true
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+
+# # ─── KUBE-PROMETHEUS-STACK ────────────────────────────────────────────────────
+
+# - name: Check if kube-prometheus-stack is already installed
+#   ansible.builtin.shell: helm status kube-prometheus-stack -n monitoring 2>/dev/null
+#   register: prometheus_status
+#   changed_when: false
+#   failed_when: false
+#   run_once: true
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+
+# - name: Install kube-prometheus-stack via Helm
+#   ansible.builtin.shell: |
+#     helm upgrade --install kube-prometheus-stack \
+#       prometheus-community/kube-prometheus-stack \
+#       --namespace monitoring \
+#       --version {{ kube_prometheus_stack_version }} \
+#       --set prometheus.prometheusSpec.retention={{ metrics_retention }} \
+#       --set prometheus.prometheusSpec.retentionSize="8GB" \
+#       --set prometheus.service.type=NodePort \
+#       --set prometheus.service.nodePort={{ prometheus_nodeport }} \
+#       --set grafana.adminPassword="{{ grafana_admin_password }}" \
+#       --set grafana.service.type=NodePort \
+#       --set grafana.service.nodePort={{ grafana_nodeport }} \
+#       --set alertmanager.service.type=NodePort \
+#       --set alertmanager.service.nodePort=32004 \
+#       --set alertmanager.config.global.smtp_smarthost="{{ smtp_server }}:{{ smtp_port }}" \
+#       --set alertmanager.config.global.smtp_from="{{ smtp_from }}" \
+#       --set alertmanager.config.global.smtp_require_tls=false \
+#       --set "alertmanager.config.receivers[0].name=email-alerts" \
+#       --set "alertmanager.config.receivers[0].email_configs[0].to={{ smtp_to }}" \
+#       --set "alertmanager.config.receivers[0].email_configs[0].send_resolved=true" \
+#       --set alertmanager.config.route.receiver="email-alerts" \
+#       --set "alertmanager.config.route.group_by[0]=alertname" \
+#       --set "alertmanager.config.route.group_by[1]=namespace" \
+#       --set nodeExporter.enabled=true \
+#       --set kubeStateMetrics.enabled=true \
+#       --timeout 10m \
+#       --wait
+#   args:
+#     executable: /bin/bash
+#   when: prometheus_status.rc != 0
+#   changed_when: false
+#   run_once: true
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+
+# # ─── LOKI ─────────────────────────────────────────────────────────────────────
+
+# - name: Check if Loki is already installed
+#   ansible.builtin.shell: helm status loki -n logging 2>/dev/null
+#   register: loki_status
+#   changed_when: false
+#   failed_when: false
+#   run_once: true
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+
+# - name: Install Loki via Helm
+#   ansible.builtin.shell: |
+#     helm upgrade --install loki \
+#       grafana/loki \
+#       --namespace logging \
+#       --set loki.commonConfig.replication_factor=1 \
+#       --set loki.storage.type=filesystem \
+#       --set loki.limits_config.retention_period=48h \
+#       --set loki.schemaConfig.configs[0].from=2024-01-01 \
+#       --set loki.schemaConfig.configs[0].store=tsdb \
+#       --set loki.schemaConfig.configs[0].object_store=filesystem \
+#       --set loki.schemaConfig.configs[0].schema=v13 \
+#       --set loki.schemaConfig.configs[0].index.prefix=loki_index_ \
+#       --set loki.schemaConfig.configs[0].index.period=24h \
+#       --set singleBinary.replicas=1 \
+#       --set write.replicas=0 \
+#       --set read.replicas=0 \
+#       --set backend.replicas=0 \
+#       --timeout 10m \
+#       --wait
+#   args:
+#     executable: /bin/bash
+#   when: loki_status.rc != 0
+#   changed_when: false
+#   run_once: true
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+
+# # ─── FLUENT BIT ───────────────────────────────────────────────────────────────
+
+# - name: Check if Fluent Bit is already installed
+#   ansible.builtin.shell: helm status fluent-bit -n logging 2>/dev/null
+#   register: fluentbit_status
+#   changed_when: false
+#   failed_when: false
+#   run_once: true
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+
+# - name: Copy Fluent Bit values file to master
+#   ansible.builtin.copy:
+#     dest: /tmp/fluentbit-values.yaml
+#     owner: root
+#     group: root
+#     mode: "0644"
+#     content: |
+#       config:
+#         outputs: |
+#           [OUTPUT]
+#               Name                   loki
+#               Match                  *
+#               Host                   loki.logging.svc.cluster.local
+#               Port                   3100
+#               Labels                 job=fluent-bit
+#               Auto_Kubernetes_Labels on
+#               label_keys             $sub['stream']
+#               line_format            json
+#         filters: |
+#           [FILTER]
+#               Name                kubernetes
+#               Match               kube.*
+#               Merge_Log           On
+#               Keep_Log            Off
+#               K8S-Logging.Parser  On
+#               K8S-Logging.Exclude On
+#       tolerations:
+#         - key: node-role.kubernetes.io/control-plane
+#           operator: Exists
+#           effect: NoSchedule
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+#   run_once: true
+
+# - name: Install Fluent Bit via Helm
+#   ansible.builtin.shell: |
+#     helm upgrade --install fluent-bit \
+#       fluent/fluent-bit \
+#       --namespace logging \
+#       --version {{ fluent_bit_version }} \
+#       --values /tmp/fluentbit-values.yaml \
+#       --timeout 5m \
+#       --wait
+#   args:
+#     executable: /bin/bash
+#   when: fluentbit_status.rc != 0
+#   changed_when: false
+#   run_once: true
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+
+# # ─── GRAFANA LOKI DATASOURCE ──────────────────────────────────────────────────
+
+# - name: Add Loki datasource to Grafana
+#   ansible.builtin.shell: |
+#     kubectl apply -f - <<'EOF'
+#     apiVersion: v1
+#     kind: ConfigMap
+#     metadata:
+#       name: loki-datasource
+#       namespace: monitoring
+#       labels:
+#         grafana_datasource: "1"
+#     data:
+#       loki-datasource.yaml: |
+#         apiVersion: 1
+#         datasources:
+#           - name: Loki
+#             type: loki
+#             access: proxy
+#             url: http://loki.logging.svc.cluster.local:3100
+#             isDefault: false
+#             editable: true
+#     EOF
+#   args:
+#     executable: /bin/bash
+#   changed_when: false
+#   run_once: true
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+
+# # ─── KUBERNETES DASHBOARD ─────────────────────────────────────────────────────
+
+# - name: Check if dashboard is already installed
+#   ansible.builtin.shell: |
+#     kubectl get deployment kubernetes-dashboard \
+#       -n kubernetes-dashboard 2>/dev/null
+#   register: dashboard_status
+#   changed_when: false
+#   failed_when: false
+#   run_once: true
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+
+# - name: Install Kubernetes Dashboard
+#   ansible.builtin.shell: |
+#     kubectl apply -f \
+#       https://raw.githubusercontent.com/kubernetes/dashboard/{{ k8s_dashboard_version }}/aio/deploy/recommended.yaml
+#   args:
+#     executable: /bin/bash
+#   when: dashboard_status.rc != 0
+#   changed_when: false
+#   run_once: true
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+
+# - name: Copy dashboard admin user manifest
+#   ansible.builtin.copy:
+#     src: dashboard-adminuser.yaml
+#     dest: /tmp/dashboard-adminuser.yaml
+#     owner: root
+#     group: root
+#     mode: "0644"
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+#   run_once: true
+
+# - name: Apply dashboard admin user
+#   ansible.builtin.shell: kubectl apply -f /tmp/dashboard-adminuser.yaml
+#   args:
+#     executable: /bin/bash
+#   changed_when: false
+#   run_once: true
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+
+# - name: Patch dashboard service to NodePort
+#   ansible.builtin.shell: |
+#     kubectl patch svc kubernetes-dashboard \
+#       -n kubernetes-dashboard \
+#       -p '{"spec":{"type":"NodePort","ports":[{"port":443,"targetPort":8443,"nodePort":{{ dashboard_nodeport }}}]}}'
+#   args:
+#     executable: /bin/bash
+#   changed_when: false
+#   run_once: true
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+
+# - name: Generate dashboard admin token
+#   ansible.builtin.shell: |
+#     kubectl -n kubernetes-dashboard create token admin-user
+#   args:
+#     executable: /bin/bash
+#   register: dashboard_token
+#   changed_when: false
+#   run_once: true
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+
+# # ─── WAIT FOR ALL PODS ────────────────────────────────────────────────────────
+
+# - name: Wait for Grafana pod to be ready
+#   ansible.builtin.shell: |
+#     kubectl wait --for=condition=ready pod \
+#       -l app.kubernetes.io/name=grafana \
+#       -n monitoring \
+#       --timeout=180s
+#   args:
+#     executable: /bin/bash
+#   changed_when: false
+#   run_once: true
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+#   ignore_errors: true
+
+# - name: Wait for Loki pod to be ready
+#   ansible.builtin.shell: |
+#     kubectl wait --for=condition=ready pod \
+#       -l app.kubernetes.io/name=loki \
+#       -n logging \
+#       --timeout=180s
+#   args:
+#     executable: /bin/bash
+#   changed_when: false
+#   run_once: true
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+#   ignore_errors: true
+
+# # ─── FINAL STATUS ─────────────────────────────────────────────────────────────
+
+# - name: Get monitoring stack status
+#   ansible.builtin.shell: |
+#     echo "=== MONITORING ===" && \
+#     kubectl get pods -n monitoring -o wide && \
+#     echo "=== SERVICES ===" && \
+#     kubectl get svc -n monitoring && \
+#     echo "=== LOGGING ===" && \
+#     kubectl get pods -n logging -o wide && \
+#     echo "=== DASHBOARD ===" && \
+#     kubectl get pods -n kubernetes-dashboard
+#   args:
+#     executable: /bin/bash
+#   register: monitoring_status
+#   changed_when: false
+#   run_once: true
+#   delegate_to: "{{ groups['k8s_master'][0] }}"
+
+# - name: Display monitoring stack status
+#   ansible.builtin.debug:
+#     msg: "{{ monitoring_status.stdout_lines }}"
+
+# - name: Display access information
+#   ansible.builtin.debug:
+#     msg:
+#       - "================================================"
+#       - " MONITORING STACK ACCESS INFORMATION"
+#       - "================================================"
+#       - "Grafana      : http://192.168.1.28:32000"
+#       - "               user: admin"
+#       - "               pass: {{ grafana_admin_password }}"
+#       - "Prometheus   : http://192.168.1.28:32002"
+#       - "Alertmanager : http://192.168.1.28:32004"
+#       - "K8s Dashboard: https://192.168.1.28:32003"
+#       - "================================================"
+#       - "Dashboard Token:"
+#       - "{{ dashboard_token.stdout }}"
+#       - "================================================"

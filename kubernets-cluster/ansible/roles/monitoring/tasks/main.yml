@@ -17,7 +17,6 @@
   run_once: true
   delegate_to: "{{ groups['k8s_master'][0] }}"
 
----
 # ─── OPEN FIREWALL PORTS FOR MONITORING ──────────────────────────────────────
 
 - name: Open Grafana NodePort on all nodes

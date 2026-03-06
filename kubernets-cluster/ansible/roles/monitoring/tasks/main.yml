@@ -1,4 +1,22 @@
 ---
+# ─── CLEANUP PREVIOUS FAILED INSTALL ─────────────────────────────────────────
+
+- name: Clean up any previous failed monitoring install
+  ansible.builtin.shell: |
+    helm uninstall kube-prometheus-stack -n monitoring 2>/dev/null || true
+    helm uninstall loki -n logging 2>/dev/null || true
+    helm uninstall fluent-bit -n logging 2>/dev/null || true
+    kubectl delete secret alertmanager-kube-prometheus-stack-alertmanager \
+      -n monitoring 2>/dev/null || true
+    kubectl delete namespace monitoring 2>/dev/null || true
+    kubectl delete namespace logging 2>/dev/null || true
+    sleep 10
+  args:
+    executable: /bin/bash
+  changed_when: false
+  run_once: true
+  delegate_to: "{{ groups['k8s_master'][0] }}"
+
 # ─── OPEN FIREWALL PORTS FOR MONITORING ──────────────────────────────────────
 
 - name: Open Grafana NodePort on all nodes
